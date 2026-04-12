@@ -1,0 +1,14 @@
+{
+  "name": "adcelerate-image-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Centralized NanoBanana image generation service using WisGate API",
+  "dependencies": {
+    "hono": "^4.7.10"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}
