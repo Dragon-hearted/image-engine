@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎨 ImageEngine
+![ImageEngine](images/hero.svg)
 
 ### Centralized NanoBanana image generation service using WisGate (JuheAPI) with rate limiting, token-based cost tracking, budget guards, retry/backoff, batch parallel execution, and generation gallery
 
@@ -44,6 +44,8 @@
 ---
 
 ## 🏗 Architecture
+
+![Pipeline](images/pipeline.svg)
 
 ImageEngine processes data through a multi-stage pipeline:
 
@@ -127,6 +129,9 @@ image-engine/
 ├── imageengine.db
 ├── imageengine.db-shm
 ├── imageengine.db-wal
+├── images
+│   ├── hero.svg
+│   └── pipeline.svg
 ├── justfile
 ├── knowledge
 │   ├── acceptance-criteria.md
