@@ -47,16 +47,7 @@
 
 ![Pipeline](images/pipeline.svg)
 
-ImageEngine processes data through a multi-stage pipeline:
-
-```mermaid
-flowchart LR
-    ImageEngine_stage_0[generation]
-    ImageEngine_stage_1[batch-execution]
-    ImageEngine_stage_0 --> ImageEngine_stage_1
-    ImageEngine_stage_2[budget-management]
-    ImageEngine_stage_1 --> ImageEngine_stage_2
-```
+ImageEngine processes data through a multi-stage pipeline.
 
 ---
 
