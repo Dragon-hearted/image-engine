@@ -117,9 +117,6 @@ bun run systems/image-engine/src/index.ts
 ```
 image-engine/
 ├── README.md
-├── imageengine.db
-├── imageengine.db-shm
-├── imageengine.db-wal
 ├── images
 │   ├── hero.svg
 │   └── pipeline.svg
@@ -129,20 +126,7 @@ image-engine/
 │   ├── dependencies.md
 │   ├── domain.md
 │   └── scope.md
-├── logs
-│   ├── 6471471b-6899-48cc-af0c-7bb462afb381
-│   │   ├── chat.json
-│   │   ├── notification.json
-│   │   ├── permission_request.json
-│   │   ├── post_tool_use.json
-│   │   ├── post_tool_use_failure.json
-│   │   ├── pre_tool_use.json
-│   │   └── stop.json
-│   ├── session_end.json
-│   └── user_prompt_submit.json
 ├── package.json
-├── scripts
-│   └── generate-storyboard-scenes.ts
 ├── src
 │   ├── db.ts
 │   ├── index.ts
@@ -157,13 +141,7 @@ image-engine/
 │   │   └── generate.ts
 │   ├── types.ts
 │   └── wisgate.ts
-├── tsconfig.json
-└── uploads
-    ├── 44d21698-7b1a-426f-b71b-7821e4e01e04.png
-    ├── 487862ca-77f9-45b4-b8b5-8d42ba5a8374.png
-    ├── 6cdd5970-7dad-4fc0-a810-aae71b0e7702.png
-    ├── ca288f08-abf7-4eab-9717-270e930fd24c.png
-    └── da60854a-41f6-4350-8b99-45d0fbe07f8a.png
+└── tsconfig.json
 ```
 
 ---
