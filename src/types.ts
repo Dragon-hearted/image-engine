@@ -75,6 +75,7 @@ export interface GenerationRequest {
 	prompt: string;
 	model?: WisGateModel;
 	referenceImageIds?: string[];
+	referenceImages?: { data: string; mimeType: string }[];
 	aspectRatio?: AspectRatio;
 	imageSize?: ImageSize;
 	forceImage?: boolean;
