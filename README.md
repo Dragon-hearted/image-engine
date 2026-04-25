@@ -141,6 +141,8 @@ image-engine/
 │   │   └── generate.ts
 │   ├── types.ts
 │   └── wisgate.ts
+├── test
+│   └── inline-references.test.ts
 └── tsconfig.json
 ```
 
