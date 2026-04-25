@@ -2,7 +2,7 @@
 
 ![ImageEngine](images/hero.svg)
 
-### Centralized NanoBanana image generation service using WisGate (JuheAPI) with rate limiting, token-based cost tracking, budget guards, retry/backoff, batch parallel execution, and generation gallery
+### Centralized NanoBanana image-generation gateway over WisGate
 
 ![Status](https://img.shields.io/badge/Status-active-brightgreen)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
