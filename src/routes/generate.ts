@@ -20,6 +20,13 @@ import { generateImage } from "../wisgate";
 
 const UPLOADS_DIR = "./uploads";
 
+export class ReferenceImageTooLargeError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ReferenceImageTooLargeError";
+	}
+}
+
 export const generate = new Hono();
 
 // Apply rate limiter and budget guard to all generation routes
@@ -35,8 +42,19 @@ export async function executeGeneration(
 ): Promise<GenerationResult> {
 	const model = request.model ?? "gemini-2.5-flash-image";
 
-	// Resolve reference images from IDs
+	// Resolve reference images: inline (base64) first, then DB-looked-up IDs
 	const referenceImages: { data: string; mimeType: string }[] = [];
+	if (request.referenceImages?.length) {
+		for (const ref of request.referenceImages) {
+			// 10 MB binary ≈ 13.5 MB base64 string; cap conservatively
+			if (!ref.data || ref.data.length > 14_000_000) {
+				throw new ReferenceImageTooLargeError(
+					"Reference image exceeds 10 MB cap",
+				);
+			}
+			referenceImages.push({ data: ref.data, mimeType: ref.mimeType });
+		}
+	}
 	if (request.referenceImageIds?.length) {
 		for (const refId of request.referenceImageIds) {
 			const img = getImage(refId);
@@ -131,6 +149,9 @@ generate.post("/", async (c) => {
 		return c.json(result, 201);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		if (err instanceof ReferenceImageTooLargeError) {
+			return c.json({ error: message }, 413);
+		}
 		if (message.startsWith("Reference image not found")) {
 			return c.json({ error: message }, 404);
 		}

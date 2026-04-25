@@ -127,6 +127,19 @@ image-engine/
 │   ├── domain.md
 │   └── scope.md
 ├── package.json
+├── scripts
+│   ├── generate-storyboard-scenes.ts
+│   ├── generate-vindof-character-sheets-v4.ts
+│   ├── generate-vindof-character-sheets.ts
+│   ├── generate-vindof-mirror-walk-v2-resume.ts
+│   ├── generate-vindof-mirror-walk-v2.ts
+│   ├── generate-vindof-mirror-walk-v3-resume.ts
+│   ├── generate-vindof-mirror-walk-v3.ts
+│   ├── generate-vindof-mirror-walk-v4-resume.ts
+│   ├── generate-vindof-mirror-walk-v4.ts
+│   ├── generate-vindof-mirror-walk.ts
+│   └── lib
+│       └── brand.ts
 ├── src
 │   ├── db.ts
 │   ├── index.ts
@@ -141,7 +154,12 @@ image-engine/
 │   │   └── generate.ts
 │   ├── types.ts
 │   └── wisgate.ts
-└── tsconfig.json
+├── test
+│   └── inline-references.test.ts
+├── tsconfig.json
+└── vendor
+    └── design-system
+        └── tokens.css
 ```
 
 ---
