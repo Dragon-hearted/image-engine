@@ -1,3 +1,5 @@
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type {
 	WisGateBalanceResponse,
 	WisGateRequest,
@@ -7,8 +9,69 @@ import type {
 const API_BASE = "https://api.wisgate.ai";
 const MAX_RETRIES = 3;
 
+// Bun loads `.env` once at process start, so a long-running server keeps a
+// stale `WISDOM_GATE_KEY` after the user rotates it. Re-parse the dotenv file
+// on each call, gated by mtime so it stays cheap. Falls back to the original
+// `process.env` snapshot when the file is missing or unreadable.
+const DOTENV_KEY = "WISDOM_GATE_KEY";
+const DOTENV_CANDIDATES = [
+	join(import.meta.dir, "..", ".env"),
+	join(process.cwd(), ".env"),
+];
+
+let dotenvCache: { path: string; mtimeMs: number; key: string | null } | null =
+	null;
+
+function readKeyFromDotenv(): string | null {
+	for (const path of DOTENV_CANDIDATES) {
+		let mtimeMs: number;
+		try {
+			mtimeMs = statSync(path).mtimeMs;
+		} catch {
+			continue;
+		}
+		if (
+			dotenvCache &&
+			dotenvCache.path === path &&
+			dotenvCache.mtimeMs === mtimeMs
+		) {
+			return dotenvCache.key;
+		}
+		try {
+			const raw = readFileSync(path, "utf8");
+			const key = parseDotenvKey(raw, DOTENV_KEY);
+			dotenvCache = { path, mtimeMs, key };
+			if (key) return key;
+		} catch {
+			// fall through to the next candidate
+		}
+	}
+	return null;
+}
+
+function parseDotenvKey(text: string, name: string): string | null {
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("#")) continue;
+		const eq = line.indexOf("=");
+		if (eq === -1) continue;
+		const k = line.slice(0, eq).replace(/^export\s+/, "").trim();
+		if (k !== name) continue;
+		let v = line.slice(eq + 1).trim();
+		if (
+			(v.startsWith('"') && v.endsWith('"')) ||
+			(v.startsWith("'") && v.endsWith("'"))
+		) {
+			v = v.slice(1, -1);
+		}
+		return v;
+	}
+	return null;
+}
+
 function getApiKey(): string {
-	const key = process.env.WISDOM_GATE_KEY;
+	const fresh = readKeyFromDotenv();
+	const key = fresh ?? process.env.WISDOM_GATE_KEY;
 	if (!key) throw new Error("WISDOM_GATE_KEY environment variable is not set");
 	return key;
 }
