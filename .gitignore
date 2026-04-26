@@ -6,3 +6,4 @@ logs/
 output/
 uploads/
 .env
+.claude/
