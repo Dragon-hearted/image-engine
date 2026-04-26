@@ -145,6 +145,9 @@ export interface BudgetConfig {
 	warnAtPercent: number;
 	isActive: number;
 	updatedAt: string;
+	dollarTopUp: number;
+	dollarsLastSeen: number;
+	currencySymbol: string;
 }
 
 export interface BudgetStatus {
@@ -153,5 +156,9 @@ export interface BudgetStatus {
 	tokensRemaining: number;
 	percentUsed: number;
 	isActive: boolean;
+	dollarsCeiling: number;
+	dollarsSpent: number;
+	dollarsRemaining: number;
+	currencySymbol: string;
 	wisGateBalance?: WisGateBalanceResponse;
 }

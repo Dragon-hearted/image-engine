@@ -18,22 +18,23 @@ export function budgetGuard(): MiddlewareHandler {
 			return;
 		}
 
-		const tokensSpent = getTotalTokensSpent();
-		const tokensRemaining = config.tokenCeiling - tokensSpent;
+		const topUp = config.dollarTopUp ?? 0;
+		const remaining = config.dollarsLastSeen ?? 0;
+		const spent = Math.max(0, topUp - remaining);
 		const percentUsed =
-			config.tokenCeiling > 0
-				? Math.round((tokensSpent / config.tokenCeiling) * 100)
-				: 0;
+			topUp > 0 ? Math.round((spent / topUp) * 100) : 0;
+		const symbol = config.currencySymbol ?? "$";
 
-		// Hard stop at 100%
-		if (tokensSpent >= config.tokenCeiling) {
+		// Hard stop when WisGate balance is exhausted
+		if (topUp > 0 && remaining <= 0) {
 			return c.json(
 				{
 					error: "Budget ceiling exceeded",
-					spent: tokensSpent,
-					ceiling: config.tokenCeiling,
+					spent,
+					ceiling: topUp,
 					remaining: 0,
 					percentUsed,
+					currencySymbol: symbol,
 				} satisfies Record<string, unknown>,
 				402,
 			);
@@ -48,8 +49,8 @@ export function budgetGuard(): MiddlewareHandler {
 		}
 
 		// Set budget info headers
-		c.header("X-Budget-Spent", String(tokensSpent));
-		c.header("X-Budget-Remaining", String(tokensRemaining));
+		c.header("X-Budget-Spent", spent.toFixed(4));
+		c.header("X-Budget-Remaining", remaining.toFixed(4));
 
 		await next();
 	};
@@ -61,17 +62,27 @@ export async function getBudgetStatus(
 ): Promise<BudgetStatus> {
 	const config = getBudgetConfig();
 	const tokensSpent = getTotalTokensSpent();
-	const ceiling = config?.tokenCeiling ?? 0;
-	const remaining = Math.max(0, ceiling - tokensSpent);
+	const tokenCeiling = config?.tokenCeiling ?? 0;
+	const tokensRemaining = Math.max(0, tokenCeiling - tokensSpent);
+
+	const dollarsCeiling = config?.dollarTopUp ?? 0;
+	const dollarsRemaining = config?.dollarsLastSeen ?? 0;
+	const dollarsSpent = Math.max(0, dollarsCeiling - dollarsRemaining);
 	const percentUsed =
-		ceiling > 0 ? Math.round((tokensSpent / ceiling) * 100) : 0;
+		dollarsCeiling > 0
+			? Math.round((dollarsSpent / dollarsCeiling) * 100)
+			: 0;
 
 	const status: BudgetStatus = {
-		tokenCeiling: ceiling,
+		tokenCeiling,
 		tokensSpent,
-		tokensRemaining: remaining,
+		tokensRemaining,
 		percentUsed,
 		isActive: config?.isActive === 1,
+		dollarsCeiling,
+		dollarsSpent,
+		dollarsRemaining,
+		currencySymbol: config?.currencySymbol ?? "$",
 	};
 
 	if (includeWisGate) {
