@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	WisGateBalanceResponse,
@@ -9,42 +9,29 @@ import type {
 const API_BASE = "https://api.wisgate.ai";
 const MAX_RETRIES = 3;
 
-// Bun loads `.env` once at process start, so a long-running server keeps a
-// stale `WISDOM_GATE_KEY` after the user rotates it. Re-parse the dotenv file
-// on each call, gated by mtime so it stays cheap. Falls back to the original
-// `process.env` snapshot when the file is missing or unreadable.
+// Bun loads `.env` once at process start, so the subprocess's
+// `process.env.WISDOM_GATE_KEY` is a frozen snapshot that goes stale the
+// moment the user rotates the key. Always re-read the dotenv file on each
+// call — the read is microseconds compared to the network roundtrip — and
+// never fall back to `process.env`, since that is the stale value we are
+// trying to escape. The pinboard TUI's capital-R "reload tools" command
+// also kills this subprocess so a missing .env recovers cleanly.
 const DOTENV_KEY = "WISDOM_GATE_KEY";
 const DOTENV_CANDIDATES = [
 	join(import.meta.dir, "..", ".env"),
 	join(process.cwd(), ".env"),
 ];
 
-let dotenvCache: { path: string; mtimeMs: number; key: string | null } | null =
-	null;
-
 function readKeyFromDotenv(): string | null {
 	for (const path of DOTENV_CANDIDATES) {
-		let mtimeMs: number;
+		let raw: string;
 		try {
-			mtimeMs = statSync(path).mtimeMs;
+			raw = readFileSync(path, "utf8");
 		} catch {
 			continue;
 		}
-		if (
-			dotenvCache &&
-			dotenvCache.path === path &&
-			dotenvCache.mtimeMs === mtimeMs
-		) {
-			return dotenvCache.key;
-		}
-		try {
-			const raw = readFileSync(path, "utf8");
-			const key = parseDotenvKey(raw, DOTENV_KEY);
-			dotenvCache = { path, mtimeMs, key };
-			if (key) return key;
-		} catch {
-			// fall through to the next candidate
-		}
+		const key = parseDotenvKey(raw, DOTENV_KEY);
+		if (key) return key;
 	}
 	return null;
 }
@@ -70,9 +57,12 @@ function parseDotenvKey(text: string, name: string): string | null {
 }
 
 function getApiKey(): string {
-	const fresh = readKeyFromDotenv();
-	const key = fresh ?? process.env.WISDOM_GATE_KEY;
-	if (!key) throw new Error("WISDOM_GATE_KEY environment variable is not set");
+	const key = readKeyFromDotenv();
+	if (!key) {
+		throw new Error(
+			"WISDOM_GATE_KEY missing in .env — edit it and press capital R in pinboard to reload tools.",
+		);
+	}
 	return key;
 }
 

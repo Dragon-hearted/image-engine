@@ -61,6 +61,25 @@ db.exec(`
   )
 `);
 
+// Idempotent migration: add dollar columns if missing
+const budgetCols = db
+	.prepare("PRAGMA table_info(budget_config)")
+	.all() as Array<{ name: string }>;
+const hasCol = (name: string) => budgetCols.some((c) => c.name === name);
+if (!hasCol("dollarTopUp")) {
+	db.exec("ALTER TABLE budget_config ADD COLUMN dollarTopUp REAL DEFAULT 0");
+}
+if (!hasCol("dollarsLastSeen")) {
+	db.exec(
+		"ALTER TABLE budget_config ADD COLUMN dollarsLastSeen REAL DEFAULT 0",
+	);
+}
+if (!hasCol("currencySymbol")) {
+	db.exec(
+		"ALTER TABLE budget_config ADD COLUMN currencySymbol TEXT DEFAULT '$'",
+	);
+}
+
 // Insert default budget config if none exists
 const existingConfig = db.prepare("SELECT id FROM budget_config LIMIT 1").get();
 
@@ -199,6 +218,15 @@ export function updateBudgetCeiling(ceiling: number): void {
 	db.prepare(
 		"UPDATE budget_config SET tokenCeiling = ?, updatedAt = ? WHERE isActive = 1",
 	).run(ceiling, new Date().toISOString());
+}
+
+export function updateDollarBudget(
+	topUp: number,
+	lastSeen: number,
+): void {
+	db.prepare(
+		"UPDATE budget_config SET dollarTopUp = ?, dollarsLastSeen = ?, updatedAt = ? WHERE isActive = 1",
+	).run(topUp, lastSeen, new Date().toISOString());
 }
 
 export { db };
