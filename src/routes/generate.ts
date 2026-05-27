@@ -9,14 +9,26 @@ import {
 import { executeBatch } from "../lib/batch-executor";
 import { budgetGuard } from "../middleware/budget-guard";
 import { rateLimiter } from "../middleware/rate-limiter";
+import { generateOpenAIImage } from "../openai-provider";
 import type {
 	BatchRequest,
 	BatchResult,
 	GenerationRequest,
 	GenerationResult,
-	WisGateResponse,
+	OpenAIImageModel,
+	TokenUsage,
+	WisGateModel,
 } from "../types";
 import { generateImage } from "../wisgate";
+
+function openaiSizeFromAspectRatio(
+	ar?: string,
+): "1024x1024" | "1024x1536" | "1536x1024" {
+	if (!ar) return "1024x1024";
+	if (ar === "9:16" || ar === "4:5" || ar === "2:3") return "1024x1536";
+	if (ar === "16:9" || ar === "3:2" || ar === "21:9") return "1536x1024";
+	return "1024x1024";
+}
 
 const UPLOADS_DIR = "./uploads";
 
@@ -41,6 +53,7 @@ export async function executeGeneration(
 	request: GenerationRequest,
 ): Promise<GenerationResult> {
 	const model = request.model ?? "gemini-2.5-flash-image";
+	const isOpenAI = model.startsWith("gpt-");
 
 	// Resolve reference images: inline (base64) first, then DB-looked-up IDs
 	const referenceImages: { data: string; mimeType: string }[] = [];
@@ -70,16 +83,38 @@ export async function executeGeneration(
 		}
 	}
 
-	const response: WisGateResponse = await generateImage({
-		model,
-		prompt: request.prompt,
-		systemInstruction: request.systemInstruction,
-		referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
-		aspectRatio: request.aspectRatio,
-		imageSize: request.imageSize,
-		forceImage: request.forceImage,
-		conversationHistory: request.conversationHistory,
-	});
+	let response: {
+		imageBuffer: Buffer;
+		mimeType: string;
+		tokenUsage: TokenUsage;
+		finishReason: string;
+	};
+
+	if (isOpenAI) {
+		// OpenAI Images API takes pixel dimensions, not aspect-ratio strings,
+		// and has no equivalent for systemInstruction/referenceImages/forceImage.
+		// Those WisGate-specific fields are intentionally ignored here.
+		const size = openaiSizeFromAspectRatio(request.aspectRatio);
+		const quality = request.openaiQuality ?? "high";
+		response = await generateOpenAIImage({
+			model: model as OpenAIImageModel,
+			prompt: request.prompt,
+			size,
+			quality,
+		});
+	} else {
+		response = await generateImage({
+			model: model as WisGateModel,
+			prompt: request.prompt,
+			systemInstruction: request.systemInstruction,
+			referenceImages:
+				referenceImages.length > 0 ? referenceImages : undefined,
+			aspectRatio: request.aspectRatio,
+			imageSize: request.imageSize,
+			forceImage: request.forceImage,
+			conversationHistory: request.conversationHistory,
+		});
+	}
 
 	// Save the generated image to disk
 	const genId = randomUUID();
