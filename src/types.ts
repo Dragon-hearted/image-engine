@@ -5,6 +5,10 @@ export type WisGateModel =
 	| "gemini-3.1-flash-image-preview"
 	| "gemini-2.5-flash-image";
 
+export type OpenAIImageModel = "gpt-image-2" | "gpt-image-1.5";
+
+export type ImageModel = WisGateModel | OpenAIImageModel;
+
 export type AspectRatio =
 	| "1:1"
 	| "2:3"
@@ -73,7 +77,7 @@ export interface WisGateBalanceResponse {
 
 export interface GenerationRequest {
 	prompt: string;
-	model?: WisGateModel;
+	model?: ImageModel;
 	referenceImageIds?: string[];
 	referenceImages?: { data: string; mimeType: string }[];
 	aspectRatio?: AspectRatio;
@@ -82,6 +86,8 @@ export interface GenerationRequest {
 	systemInstruction?: string;
 	conversationHistory?: GeminiContent[];
 	sceneId?: string;
+	/** OpenAI-only quality knob. Ignored when routing to WisGate. */
+	openaiQuality?: "low" | "medium" | "high";
 }
 
 export interface GenerationResult {
