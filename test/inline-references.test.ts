@@ -51,6 +51,7 @@ describe("inline referenceImages", () => {
 		const base64 = Buffer.from("hello-world-image").toString("base64");
 		const result = await executeGeneration({
 			prompt: "test",
+			model: "gemini-2.5-flash-image",
 			referenceImages: [{ data: base64, mimeType: "image/png" }],
 		});
 
@@ -72,6 +73,7 @@ describe("inline referenceImages", () => {
 		await expect(
 			executeGeneration({
 				prompt: "test",
+				model: "gemini-2.5-flash-image",
 				referenceImages: [{ data: oversized, mimeType: "image/png" }],
 			}),
 		).rejects.toBeInstanceOf(ReferenceImageTooLargeError);
@@ -86,6 +88,7 @@ describe("inline referenceImages", () => {
 		const base64 = Buffer.from("inline").toString("base64");
 		await executeGeneration({
 			prompt: "test",
+			model: "gemini-2.5-flash-image",
 			referenceImages: [{ data: base64, mimeType: "image/jpeg" }],
 		}).catch(() => {});
 

@@ -7,7 +7,9 @@ export type WisGateModel =
 
 export type OpenAIImageModel = "gpt-image-2" | "gpt-image-1.5";
 
-export type ImageModel = WisGateModel | OpenAIImageModel;
+export type HiggsfieldModel = "higgsfield-gpt-image-2";
+
+export type ImageModel = WisGateModel | OpenAIImageModel | HiggsfieldModel;
 
 export type AspectRatio =
 	| "1:1"

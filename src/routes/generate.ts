@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Hono } from "hono";
 import {
 	getImage,
@@ -6,6 +9,7 @@ import {
 	insertImage,
 	insertTokenRecord,
 } from "../db";
+import { generateHiggsfieldImage } from "../higgsfield-provider";
 import { executeBatch } from "../lib/batch-executor";
 import { budgetGuard } from "../middleware/budget-guard";
 import { rateLimiter } from "../middleware/rate-limiter";
@@ -21,6 +25,12 @@ import type {
 } from "../types";
 import { generateImage } from "../wisgate";
 
+/**
+ * Higgsfield is the default generation provider for ImageEngine: any caller
+ * that omits `model` gets it. gemini/openai models stay selectable via `model`.
+ */
+const DEFAULT_MODEL = "higgsfield-gpt-image-2";
+
 function openaiSizeFromAspectRatio(
 	ar?: string,
 ): "1024x1024" | "1024x1536" | "1536x1024" {
@@ -28,6 +38,13 @@ function openaiSizeFromAspectRatio(
 	if (ar === "9:16" || ar === "4:5" || ar === "2:3") return "1024x1536";
 	if (ar === "16:9" || ar === "3:2" || ar === "21:9") return "1536x1024";
 	return "1024x1024";
+}
+
+/** Map a reference image's mime type to a file extension for temp spill files. */
+function extFromMimeType(mimeType: string): string {
+	if (mimeType === "image/jpeg") return "jpg";
+	if (mimeType === "image/webp") return "webp";
+	return "png";
 }
 
 const UPLOADS_DIR = "./uploads";
@@ -52,11 +69,19 @@ generate.use("*", budgetGuard());
 export async function executeGeneration(
 	request: GenerationRequest,
 ): Promise<GenerationResult> {
-	const model = request.model ?? "gemini-2.5-flash-image";
+	const model = request.model ?? DEFAULT_MODEL;
+	const isHiggsfield = model.startsWith("higgsfield");
 	const isOpenAI = model.startsWith("gpt-");
 
-	// Resolve reference images: inline (base64) first, then DB-looked-up IDs
+	// Resolve reference images ONCE into two parallel representations:
+	//  - referenceImages: base64 list for the gemini/WisGate path (and the
+	//    Higgsfield → gemini fallback)
+	//  - referencePaths: local file paths for the Higgsfield CLI's repeated
+	//    `--image` flags (inline base64 refs are spilled to temp files)
+	// Inline (base64) refs first, then DB-looked-up IDs.
 	const referenceImages: { data: string; mimeType: string }[] = [];
+	const referencePaths: string[] = [];
+	const tempRefPaths: string[] = [];
 	if (request.referenceImages?.length) {
 		for (const ref of request.referenceImages) {
 			// 10 MB binary ≈ 13.5 MB base64 string; cap conservatively
@@ -66,6 +91,13 @@ export async function executeGeneration(
 				);
 			}
 			referenceImages.push({ data: ref.data, mimeType: ref.mimeType });
+			if (isHiggsfield) {
+				const tmpExt = extFromMimeType(ref.mimeType);
+				const tmpPath = join(tmpdir(), `ie-ref-${randomUUID()}.${tmpExt}`);
+				await writeFile(tmpPath, Buffer.from(ref.data, "base64"));
+				referencePaths.push(tmpPath);
+				tempRefPaths.push(tmpPath);
+			}
 		}
 	}
 	if (request.referenceImageIds?.length) {
@@ -80,6 +112,7 @@ export async function executeGeneration(
 				data: Buffer.from(buffer).toString("base64"),
 				mimeType: img.mimeType,
 			});
+			referencePaths.push(img.path);
 		}
 	}
 
@@ -89,31 +122,70 @@ export async function executeGeneration(
 		tokenUsage: TokenUsage;
 		finishReason: string;
 	};
+	// Records the provider actually served, which may differ from the requested
+	// `model` if a Higgsfield failure falls back to gemini — so the gallery /
+	// token ledger reflect the truth.
+	let servedModel = model;
 
-	if (isOpenAI) {
-		// OpenAI Images API takes pixel dimensions, not aspect-ratio strings,
-		// and has no equivalent for systemInstruction/referenceImages/forceImage.
-		// Those WisGate-specific fields are intentionally ignored here.
-		const size = openaiSizeFromAspectRatio(request.aspectRatio);
-		const quality = request.openaiQuality ?? "high";
-		response = await generateOpenAIImage({
-			model: model as OpenAIImageModel,
-			prompt: request.prompt,
-			size,
-			quality,
-		});
-	} else {
-		response = await generateImage({
-			model: model as WisGateModel,
-			prompt: request.prompt,
-			systemInstruction: request.systemInstruction,
-			referenceImages:
-				referenceImages.length > 0 ? referenceImages : undefined,
-			aspectRatio: request.aspectRatio,
-			imageSize: request.imageSize,
-			forceImage: request.forceImage,
-			conversationHistory: request.conversationHistory,
-		});
+	try {
+		if (isHiggsfield) {
+			try {
+				response = await generateHiggsfieldImage({
+					prompt: request.prompt,
+					aspectRatio: request.aspectRatio,
+					quality: request.openaiQuality,
+					referenceImagePaths:
+						referencePaths.length > 0 ? referencePaths : undefined,
+				});
+				servedModel = model;
+			} catch (err) {
+				console.error(
+					"[image-engine] Higgsfield failed, falling back to gemini-2.5-flash-image:",
+					err,
+				);
+				response = await generateImage({
+					model: "gemini-2.5-flash-image",
+					prompt: request.prompt,
+					systemInstruction: request.systemInstruction,
+					referenceImages:
+						referenceImages.length > 0 ? referenceImages : undefined,
+					aspectRatio: request.aspectRatio,
+					imageSize: request.imageSize,
+					forceImage: request.forceImage,
+					conversationHistory: request.conversationHistory,
+				});
+				servedModel = "gemini-2.5-flash-image";
+			}
+		} else if (isOpenAI) {
+			// OpenAI Images API takes pixel dimensions, not aspect-ratio strings,
+			// and has no equivalent for systemInstruction/referenceImages/forceImage.
+			// Those WisGate-specific fields are intentionally ignored here.
+			const size = openaiSizeFromAspectRatio(request.aspectRatio);
+			const quality = request.openaiQuality ?? "high";
+			response = await generateOpenAIImage({
+				model: model as OpenAIImageModel,
+				prompt: request.prompt,
+				size,
+				quality,
+			});
+		} else {
+			response = await generateImage({
+				model: model as WisGateModel,
+				prompt: request.prompt,
+				systemInstruction: request.systemInstruction,
+				referenceImages:
+					referenceImages.length > 0 ? referenceImages : undefined,
+				aspectRatio: request.aspectRatio,
+				imageSize: request.imageSize,
+				forceImage: request.forceImage,
+				conversationHistory: request.conversationHistory,
+			});
+		}
+	} finally {
+		// Best-effort cleanup of any temp reference files we spilled for the CLI.
+		await Promise.all(
+			tempRefPaths.map((p) => unlink(p).catch(() => undefined)),
+		);
 	}
 
 	// Save the generated image to disk
@@ -139,7 +211,7 @@ export async function executeGeneration(
 	insertGeneration({
 		id: genId,
 		prompt: request.prompt,
-		model,
+		model: servedModel,
 		systemInstruction: request.systemInstruction ?? null,
 		aspectRatio: request.aspectRatio ?? null,
 		imageSize: request.imageSize ?? null,
@@ -153,7 +225,7 @@ export async function executeGeneration(
 	insertTokenRecord({
 		id: randomUUID(),
 		generationId: genId,
-		model,
+		model: servedModel,
 		promptTokens: response.tokenUsage.promptTokens,
 		candidateTokens: response.tokenUsage.candidateTokens,
 		totalTokens: response.tokenUsage.totalTokens,
@@ -163,7 +235,7 @@ export async function executeGeneration(
 	return {
 		id: genId,
 		imageUrl: `/api/gallery/${genId}/image`,
-		model,
+		model: servedModel,
 		prompt: request.prompt,
 		tokenUsage: response.tokenUsage,
 		sceneId: request.sceneId,
