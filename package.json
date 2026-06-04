@@ -2,7 +2,7 @@
   "name": "adcelerate-image-engine",
   "version": "0.1.0",
   "type": "module",
-  "description": "Centralized NanoBanana image generation service using WisGate API",
+  "description": "Centralized image generation gateway — Higgsfield (GPT Image 2) by default with a WisGate/Gemini fallback, plus selectable Gemini (NanoBanana) and OpenAI-compatible models",
   "dependencies": {
     "hono": "^4.7.10"
   },

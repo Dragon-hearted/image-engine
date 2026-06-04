@@ -35,7 +35,7 @@
 |---------|-------------|
 | **Single image generation** | POST /api/generate turns a text prompt into an image via WisGate, persists it to disk + SQLite, and returns the generation record with token usage. |
 | **Batch generation with dependency graph** | POST /api/generate/batch runs many prompts at once. A Kahn topological sort orders items by an optional sceneId dependency graph into layers; each layer runs concurrently (semaphore, max 5). Partial failures are captured per-item as {error} rather than failing the whole batch; circular deps are handled gracefully. |
-| **Multi-provider model routing** | One endpoint, two providers. Gemini models (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview, gemini-2.5-flash-image — the default) call WisGate's generateContent API; OpenAI models (gpt-image-2, gpt-image-1.5) route to WisGate's OpenAI-compatible /v1/images/generations. Selection is automatic: model names starting with 'gpt-' use the OpenAI path. Both share one WISDOM_GATE_KEY. |
+| **Multi-provider model routing** | One endpoint, three providers. Higgsfield (higgsfield-gpt-image-2 — **the default**) shells out to the local `higgsfield` CLI (GPT Image 2); Gemini models (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview, gemini-2.5-flash-image) call WisGate's generateContent API; OpenAI models (gpt-image-2, gpt-image-1.5) route to WisGate's OpenAI-compatible /v1/images/generations. Selection is automatic: omit `model` (or pass one starting with 'higgsfield') for Higgsfield, names starting with 'gpt-' use the OpenAI path, everything else is Gemini. Gemini/OpenAI share one WISDOM_GATE_KEY. **Any caller that omits `model` now gets Higgsfield**; if a Higgsfield generation fails (unauth/timeout/CLI/no-URL) it automatically falls back to `gemini-2.5-flash-image`, and the gallery/ledger record the provider actually served. Higgsfield reports no token accounting, so its generations record zero token usage. |
 | **Reference images (image-to-image)** | Supply references two ways: inline base64 via referenceImages[] (each capped ~10 MB binary / 14M base64 chars) or referenceImageIds[] that are resolved against the IMAGES table via getImage() (NOT the generations table). Up to 14 references per request (6 objects + 5 humans per WisGate). Gemini path only; ignored for OpenAI models. |
 | **Multi-turn conversational editing** | conversationHistory[] (Gemini role/parts content) lets you iteratively refine an image across turns. Gemini path only. |
 | **Generation controls** | aspectRatio (14 ratios: 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, plus 1:4/1:8/4:1/8:1 on flash), imageSize (0.5K/1K/2K/4K), forceImage (image-only output), systemInstruction (style guidance), and openaiQuality (low/medium/high, default high) for OpenAI models. |
@@ -75,8 +75,9 @@ ImageEngine processes data through a multi-stage pipeline.
 ### Prerequisites
 
 - Bun v1.0+ — curl -fsSL https://bun.sh/install | bash
-- A WisGate (JuheAPI) account key set as WISDOM_GATE_KEY in systems/image-engine/.env (re-read from .env on every call, so rotating it needs no restart)
-- For real generation: a positive WisGate dollar balance — when the balance is exhausted the budget guard hard-stops generation with HTTP 402
+- **Higgsfield CLI (HOST prerequisite for the default provider)** — `npm install -g @higgsfield/cli`, then authenticate once with `higgsfield auth login`. The default model `higgsfield-gpt-image-2` shells out to this binary; without it (or its auth) Higgsfield generations fall back to `gemini-2.5-flash-image`. Override the binary path with `HIGGSFIELD_BIN` if it isn't on `PATH`.
+- A WisGate (JuheAPI) account key set as WISDOM_GATE_KEY in systems/image-engine/.env (re-read from .env on every call, so rotating it needs no restart) — required for the Gemini/OpenAI models and the Higgsfield → gemini fallback
+- For real Gemini/OpenAI generation (and the Higgsfield fallback): a positive WisGate dollar balance — when the balance is exhausted the budget guard hard-stops generation with HTTP 402
 
 ### Install
 
@@ -121,7 +122,15 @@ curl -s 'localhost:3002/api/budget?wisgate=true'
 
 > **Expected:** HTTP 200 JSON BudgetStatus {tokenCeiling, tokensSpent, tokensRemaining, percentUsed, dollarsCeiling, dollarsSpent, dollarsRemaining, currencySymbol, wisGateBalance?}. (Verified.)
 
-### 5. Generate a single image (WisGate / Gemini)
+### 5. Generate a single image (default provider — Higgsfield)
+
+```bash
+curl -s -X POST localhost:3002/api/generate -H 'content-type: application/json' -d '{"prompt":"a red bicycle on a white studio backdrop","aspectRatio":"1:1"}'
+```
+
+> **Expected:** HTTP 201 GenerationResult {id, imageUrl:'/api/gallery/<id>/image', model, prompt, tokenUsage, createdAt}. With no `model`, ImageEngine routes to Higgsfield (`higgsfield-gpt-image-2`) via the local `higgsfield` CLI; aspectRatio maps to the Higgsfield enum (unsupported ratios collapse to 16:9). `tokenUsage` is zero (the CLI reports none). If the CLI is missing/unauthenticated or the job fails, the response transparently falls back to `gemini-2.5-flash-image` and `model` in the result reflects the served provider. Requires the `higgsfield` CLI authenticated on the host.
+
+### 6. Generate a single image (WisGate / Gemini)
 
 ```bash
 curl -s -X POST localhost:3002/api/generate -H 'content-type: application/json' -d '{"prompt":"a red bicycle on a white studio backdrop","model":"gemini-2.5-flash-image","aspectRatio":"1:1"}'
@@ -129,7 +138,7 @@ curl -s -X POST localhost:3002/api/generate -H 'content-type: application/json' 
 
 > **Expected:** HTTP 201 GenerationResult {id, imageUrl:'/api/gallery/<id>/image', model, prompt, tokenUsage, createdAt}. Requires WISDOM_GATE_KEY AND a positive WisGate balance — NOT executed (the test environment's balance is exhausted, so the dollar budget guard returns HTTP 402 'Budget ceiling exceeded' before generation). Bypass for testing only with header 'X-Budget-Override: true'.
 
-### 6. Generate a single image (OpenAI-compatible)
+### 7. Generate a single image (OpenAI-compatible)
 
 ```bash
 curl -s -X POST localhost:3002/api/generate -H 'content-type: application/json' -d '{"prompt":"product photo of a sneaker","model":"gpt-image-2","aspectRatio":"16:9","openaiQuality":"high"}'
@@ -137,7 +146,7 @@ curl -s -X POST localhost:3002/api/generate -H 'content-type: application/json' 
 
 > **Expected:** HTTP 201 GenerationResult. Routes to WisGate's /v1/images/generations; aspectRatio maps to a pixel size (1024x1024 / 1024x1536 / 1536x1024). Requires WISDOM_GATE_KEY + balance — NOT executed (credential/budget-gated).
 
-### 7. Batch generate with a dependency graph
+### 8. Batch generate with a dependency graph
 
 ```bash
 curl -s -X POST localhost:3002/api/generate/batch -H 'content-type: application/json' -d '{"items":[{"prompt":"establishing shot","sceneId":"s1"},{"prompt":"close-up","sceneId":"s2"}],"dependencies":[{"sceneId":"s2","dependsOn":["s1"]}]}'
@@ -145,7 +154,7 @@ curl -s -X POST localhost:3002/api/generate/batch -H 'content-type: application/
 
 > **Expected:** HTTP 200 BatchResult {results:{s1:..., s2:...}, totalTokens}. Per-item errors appear as {error} entries. Requires WISDOM_GATE_KEY + balance — NOT executed (credential/budget-gated).
 
-### 8. Reuse a past generation as a reference
+### 9. Reuse a past generation as a reference
 
 ```bash
 curl -s -X POST localhost:3002/api/gallery/<generationId>/use-as-reference
@@ -153,7 +162,7 @@ curl -s -X POST localhost:3002/api/gallery/<generationId>/use-as-reference
 
 > **Expected:** HTTP 200 {generationId, data:<base64>, mimeType}. Feed `data` back into a new request's referenceImages[]. (Note: referenceImageIds[] in /api/generate resolves against the IMAGES table id, not the generation id.)
 
-### 9. Raise the token ceiling
+### 10. Raise the token ceiling
 
 ```bash
 curl -s -X PUT localhost:3002/api/budget/ceiling -H 'content-type: application/json' -d '{"ceiling":250000}'
@@ -241,6 +250,7 @@ image-engine/
 ├── src
 │   ├── db.ts
 │   ├── index.ts
+│   ├── higgsfield-provider.ts
 │   ├── lib
 │   │   └── batch-executor.ts
 │   ├── middleware
@@ -254,6 +264,7 @@ image-engine/
 │   ├── types.ts
 │   └── wisgate.ts
 ├── test
+│   ├── higgsfield-provider.test.ts
 │   └── inline-references.test.ts
 └── tsconfig.json
 ```
