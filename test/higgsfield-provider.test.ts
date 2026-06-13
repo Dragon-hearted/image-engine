@@ -57,12 +57,15 @@ const {
 // ─── pure helpers ─────────────────────────────────────────────────────────────
 
 describe("buildGenerateArgs", () => {
-	test("uses defaults (16:9 / high / 2k) and the NanoBanana Pro model", () => {
+	test("uses defaults (16:9 / 2k) and the NanoBanana Pro model — NO --quality", () => {
 		const args = buildGenerateArgs({ prompt: "a sheet" });
 		expect(args.slice(0, 3)).toEqual(["generate", "create", "nano_banana_2"]);
 		expect(args[args.indexOf("--prompt") + 1]).toBe("a sheet");
 		expect(args[args.indexOf("--aspect_ratio") + 1]).toBe("16:9");
-		expect(args[args.indexOf("--quality") + 1]).toBe("high");
+		// `--quality` is a gpt_image_2-only flag; nano_banana_2 rejects it
+		// ("Unknown params: quality"), so it must be absent for the default model.
+		expect(args).not.toContain("--quality");
+		// nano_banana_2 DOES accept --resolution (per `hf model get nano_banana_2`).
 		expect(args[args.indexOf("--resolution") + 1]).toBe("2k");
 		expect(args).toContain("--wait");
 		expect(args).toContain("--json");
@@ -74,6 +77,16 @@ describe("buildGenerateArgs", () => {
 			model: "higgsfield-gpt-image-2",
 		});
 		expect(args.slice(0, 3)).toEqual(["generate", "create", "gpt_image_2"]);
+	});
+
+	test("gpt_image_2 keeps --quality (the model that accepts it)", () => {
+		const args = buildGenerateArgs({
+			prompt: "p",
+			model: "higgsfield-gpt-image-2",
+			quality: "high",
+		});
+		expect(args[args.indexOf("--quality") + 1]).toBe("high");
+		expect(args[args.indexOf("--resolution") + 1]).toBe("2k");
 	});
 
 	test("emits a repeatable --image flag per reference image path", () => {
