@@ -7,7 +7,9 @@ export type WisGateModel =
 
 export type OpenAIImageModel = "gpt-image-2" | "gpt-image-1.5";
 
-export type HiggsfieldModel = "higgsfield-gpt-image-2";
+export type HiggsfieldModel =
+	| "higgsfield-nano-banana-pro"
+	| "higgsfield-gpt-image-2";
 
 export type ImageModel = WisGateModel | OpenAIImageModel | HiggsfieldModel;
 
@@ -90,6 +92,15 @@ export interface GenerationRequest {
 	sceneId?: string;
 	/** OpenAI-only quality knob. Ignored when routing to WisGate. */
 	openaiQuality?: "low" | "medium" | "high";
+	/**
+	 * Opt-in permission for the Higgsfield → gemini auto-fallback. When the
+	 * default Higgsfield (NanoBanana Pro) provider fails, ImageEngine does NOT
+	 * silently swap providers — it surfaces a clear actionable error instead.
+	 * Set this to `true` (or the `IMAGE_ENGINE_AUTO_FALLBACK=1` env) to permit
+	 * an automatic fallback to `gemini-2.5-flash-image`. Default: undefined =
+	 * no auto-fallback.
+	 */
+	autoFallback?: boolean;
 }
 
 export interface GenerationResult {

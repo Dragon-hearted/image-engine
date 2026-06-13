@@ -47,7 +47,9 @@ const {
 	buildGenerateArgs,
 	extractImageUrl,
 	generateHiggsfieldImage,
+	resolveHiggsfieldModel,
 	toHiggsfieldAspect,
+	DEFAULT_HIGGSFIELD_MODEL,
 	HiggsfieldError,
 	HiggsfieldCliError,
 } = await import("../src/higgsfield-provider");
@@ -55,15 +57,23 @@ const {
 // ─── pure helpers ─────────────────────────────────────────────────────────────
 
 describe("buildGenerateArgs", () => {
-	test("uses defaults (16:9 / high / 2k) and the gpt_image_2 model", () => {
+	test("uses defaults (16:9 / high / 2k) and the NanoBanana Pro model", () => {
 		const args = buildGenerateArgs({ prompt: "a sheet" });
-		expect(args.slice(0, 3)).toEqual(["generate", "create", "gpt_image_2"]);
+		expect(args.slice(0, 3)).toEqual(["generate", "create", "nano_banana_2"]);
 		expect(args[args.indexOf("--prompt") + 1]).toBe("a sheet");
 		expect(args[args.indexOf("--aspect_ratio") + 1]).toBe("16:9");
 		expect(args[args.indexOf("--quality") + 1]).toBe("high");
 		expect(args[args.indexOf("--resolution") + 1]).toBe("2k");
 		expect(args).toContain("--wait");
 		expect(args).toContain("--json");
+	});
+
+	test("maps an explicit public model id to its CLI job_set_type", () => {
+		const args = buildGenerateArgs({
+			prompt: "p",
+			model: "higgsfield-gpt-image-2",
+		});
+		expect(args.slice(0, 3)).toEqual(["generate", "create", "gpt_image_2"]);
 	});
 
 	test("emits a repeatable --image flag per reference image path", () => {
@@ -85,6 +95,46 @@ describe("toHiggsfieldAspect", () => {
 		expect(toHiggsfieldAspect("4:5")).toBe("16:9");
 		expect(toHiggsfieldAspect("21:9")).toBe("16:9");
 		expect(toHiggsfieldAspect(undefined)).toBe("16:9");
+	});
+});
+
+describe("resolveHiggsfieldModel", () => {
+	test("defaults to NanoBanana Pro (nano_banana_2)", () => {
+		const prev = process.env.HIGGSFIELD_MODEL;
+		delete process.env.HIGGSFIELD_MODEL;
+		try {
+			expect(DEFAULT_HIGGSFIELD_MODEL).toBe("nano_banana_2");
+			expect(resolveHiggsfieldModel()).toBe("nano_banana_2");
+		} finally {
+			if (prev === undefined) delete process.env.HIGGSFIELD_MODEL;
+			else process.env.HIGGSFIELD_MODEL = prev;
+		}
+	});
+
+	test("maps public ids to CLI tokens", () => {
+		expect(resolveHiggsfieldModel("higgsfield-nano-banana-pro")).toBe(
+			"nano_banana_2",
+		);
+		expect(resolveHiggsfieldModel("higgsfield-gpt-image-2")).toBe(
+			"gpt_image_2",
+		);
+	});
+
+	test("HIGGSFIELD_MODEL env overrides the default for unmapped ids", () => {
+		const prev = process.env.HIGGSFIELD_MODEL;
+		process.env.HIGGSFIELD_MODEL = "flux_2";
+		try {
+			// bare/unknown public id falls through to the env
+			expect(resolveHiggsfieldModel("higgsfield")).toBe("flux_2");
+			expect(resolveHiggsfieldModel()).toBe("flux_2");
+			// an explicit known public id still wins over the env
+			expect(resolveHiggsfieldModel("higgsfield-gpt-image-2")).toBe(
+				"gpt_image_2",
+			);
+		} finally {
+			if (prev === undefined) delete process.env.HIGGSFIELD_MODEL;
+			else process.env.HIGGSFIELD_MODEL = prev;
+		}
 	});
 });
 
