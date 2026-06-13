@@ -371,19 +371,23 @@ export function extractImageUrl(parsed: unknown): string | undefined {
 
 /** Build the argv for a `generate create <model> … --wait --json` call. */
 export function buildGenerateArgs(req: HiggsfieldGenerateRequest): string[] {
+	const cliModel = resolveHiggsfieldModel(req.model);
 	const args = [
 		"generate",
 		"create",
-		resolveHiggsfieldModel(req.model),
+		cliModel,
 		"--prompt",
 		req.prompt,
 		"--aspect_ratio",
 		toHiggsfieldAspect(req.aspectRatio),
-		"--quality",
-		req.quality ?? "high",
 		"--resolution",
 		req.resolution ?? "2k",
 	];
+	// `--quality` is a gpt_image_2-only param; nano_banana_2 rejects it
+	// ("Unknown params: quality"). Only pass it for models that accept it.
+	if (cliModel === "gpt_image_2") {
+		args.push("--quality", req.quality ?? "high");
+	}
 	for (const ref of req.referenceImagePaths ?? []) {
 		args.push("--image", ref);
 	}
