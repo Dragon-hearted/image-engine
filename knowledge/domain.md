@@ -24,6 +24,21 @@ ImageEngine is the centralized NanoBanana image generation service using WisGate
 | `gemini-3.1-flash-image-preview` | High-efficiency (Nano Banana 2) | 0.5K, 1K, 2K, 4K | Fast iteration |
 | `gemini-2.5-flash-image` | Fast and economical | 1K, 2K | Budget-conscious |
 
+## Provider Routing & Default Model
+ImageEngine routes each request to one of three providers, chosen from `model`:
+- **Higgsfield CLI (default)** — `model` omitted or starting with `higgsfield`. Shells out to the local `higgsfield` binary. The **default model is NanoBanana Pro**, exposed by the CLI as `job_set_type` **`nano_banana_2`** (confirmed via `higgsfield model list`). Public ids map to CLI tokens: `higgsfield-nano-banana-pro → nano_banana_2`, `higgsfield-gpt-image-2 → gpt_image_2`. Override globally with `HIGGSFIELD_MODEL=<job_set_type>`.
+- **OpenAI** — `model` starting with `gpt-` (`gpt-image-2`, `gpt-image-1.5`) → WisGate OpenAI-compatible `/v1/images/generations`.
+- **Gemini / WisGate** — everything else → WisGate `generateContent`.
+
+`DEFAULT_MODEL = "higgsfield-nano-banana-pro"`, so any caller omitting `model` gets NanoBanana Pro via Higgsfield. Higgsfield reports no token accounting (recorded as zeros).
+
+## Permission-Gated Fallback (no silent provider swap)
+When the Higgsfield provider fails (auth/timeout/CLI/no-URL), ImageEngine **does not** silently swap providers. By default it surfaces a clear, actionable error telling the caller to fix the CLI, retry with an explicit `model`, or permit a fallback. An automatic fallback to `gemini-2.5-flash-image` happens **only** when explicitly permitted:
+- per-request: `autoFallback: true` in the generation request, or
+- globally: `IMAGE_ENGINE_AUTO_FALLBACK=1` env.
+
+When a permitted fallback occurs, the gallery/token ledger record the provider actually served (`gemini-2.5-flash-image`), keeping records truthful.
+
 ## Reference Images
 - Up to **14 per request** (6 objects + 5 humans)
 - Passed as `inline_data` with base64-encoded data and `mime_type`

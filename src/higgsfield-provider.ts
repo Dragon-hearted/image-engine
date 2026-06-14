@@ -2,10 +2,13 @@
  * Higgsfield CLI provider — ImageEngine's DEFAULT image transport.
  *
  * Shells out to the globally-installed `higgsfield` binary (v0.1.40+) to
- * generate images with the `gpt_image_2` model, blocks with `--wait --json`,
- * parses the result media URL out of the final job object array, downloads the
- * image bytes, and returns them as a Buffer in the standard ImageEngine
- * provider shape `{ imageBuffer, mimeType, tokenUsage, finishReason }`.
+ * generate images. The default CLI model is NanoBanana Pro (job_set_type
+ * `nano_banana_2`); `gpt_image_2` and any other CLI model stay selectable via
+ * the request `model` or the `HIGGSFIELD_MODEL` env. It blocks with
+ * `--wait --json`, parses the result media URL out of the final job object
+ * array, downloads the image bytes, and returns them as a Buffer in the
+ * standard ImageEngine provider shape
+ * `{ imageBuffer, mimeType, tokenUsage, finishReason }`.
  *
  * Ported from SceneBoard's `higgsfield-client.ts` (which wrote to disk); here
  * the public entry point returns a Buffer so `executeGeneration` can persist it
@@ -14,8 +17,9 @@
  * No new npm runtime deps — the binary is an ENVIRONMENT prerequisite
  * (`npm install -g @higgsfield/cli`, then `higgsfield auth login` once).
  *
- * `executeGeneration` treats any thrown error here as a signal to fall back to
- * the gemini-2.5-flash-image provider.
+ * `executeGeneration` treats any thrown error here as a signal that the served
+ * provider failed; whether it then falls back to gemini-2.5-flash-image is
+ * permission-gated (env/flag), never a silent swap.
  */
 
 import type { AspectRatio, TokenUsage } from "./types";
@@ -36,8 +40,14 @@ export type HiggsfieldQuality = "low" | "medium" | "high";
 export type HiggsfieldResolution = "1k" | "2k" | "4k";
 
 export interface HiggsfieldGenerateRequest {
-	/** Full prompt body. GPT Image 2 has no separate system slot. */
+	/** Full prompt body. The CLI models have no separate system slot. */
 	prompt: string;
+	/**
+	 * CLI model (`job_set_type`) to generate with, e.g. `nano_banana_2`
+	 * (NanoBanana Pro — the default) or `gpt_image_2`. When omitted, resolves
+	 * from the `HIGGSFIELD_MODEL` env, then the built-in default.
+	 */
+	model?: string;
 	/** ImageEngine aspect ratio. Mapped to the Higgsfield enum; defaults to 16:9. */
 	aspectRatio?: AspectRatio;
 	/** Output resolution. Defaults to 2k. */
@@ -107,7 +117,37 @@ export class HiggsfieldCliError extends HiggsfieldError {
 function resolveBinary(): string {
 	return process.env.HIGGSFIELD_BIN || "higgsfield";
 }
-const MODEL = "gpt_image_2";
+
+/**
+ * Default Higgsfield CLI model (`job_set_type`). NanoBanana Pro is exposed by
+ * the CLI as `nano_banana_2` (confirmed via `higgsfield model list`:
+ * `nano_banana_2 → "Nano Banana Pro"`). This is the operator-preferred default;
+ * the brand's logo variants were generated "NanoBanana Pro via Higgsfield".
+ */
+export const DEFAULT_HIGGSFIELD_MODEL = "nano_banana_2";
+
+/**
+ * Map ImageEngine's public Higgsfield model ids to CLI `job_set_type` tokens.
+ * Unknown / bare `higgsfield` ids fall through to the env/default resolution.
+ */
+const PUBLIC_TO_CLI_MODEL: Record<string, string> = {
+	"higgsfield-nano-banana-pro": "nano_banana_2",
+	"higgsfield-gpt-image-2": "gpt_image_2",
+};
+
+/**
+ * Resolve the CLI model id at CALL time (not module-load) so a rotated
+ * `HIGGSFIELD_MODEL` is picked up without a restart. Precedence:
+ *   1. explicit public model id (mapped to its CLI token)
+ *   2. `HIGGSFIELD_MODEL` env (raw CLI token)
+ *   3. the built-in NanoBanana Pro default
+ */
+export function resolveHiggsfieldModel(publicModel?: string): string {
+	if (publicModel && PUBLIC_TO_CLI_MODEL[publicModel]) {
+		return PUBLIC_TO_CLI_MODEL[publicModel];
+	}
+	return process.env.HIGGSFIELD_MODEL || DEFAULT_HIGGSFIELD_MODEL;
+}
 
 const AUTH_HINTS = [
 	"session expired",
@@ -329,21 +369,25 @@ export function extractImageUrl(parsed: unknown): string | undefined {
 	return found[found.length - 1].url;
 }
 
-/** Build the argv for a `generate create gpt_image_2 … --wait --json` call. */
+/** Build the argv for a `generate create <model> … --wait --json` call. */
 export function buildGenerateArgs(req: HiggsfieldGenerateRequest): string[] {
+	const cliModel = resolveHiggsfieldModel(req.model);
 	const args = [
 		"generate",
 		"create",
-		MODEL,
+		cliModel,
 		"--prompt",
 		req.prompt,
 		"--aspect_ratio",
 		toHiggsfieldAspect(req.aspectRatio),
-		"--quality",
-		req.quality ?? "high",
 		"--resolution",
 		req.resolution ?? "2k",
 	];
+	// `--quality` is a gpt_image_2-only param; nano_banana_2 rejects it
+	// ("Unknown params: quality"). Only pass it for models that accept it.
+	if (cliModel === "gpt_image_2") {
+		args.push("--quality", req.quality ?? "high");
+	}
 	for (const ref of req.referenceImagePaths ?? []) {
 		args.push("--image", ref);
 	}
@@ -401,11 +445,12 @@ export async function downloadToBuffer(
 export async function generateHiggsfieldImage(
 	req: HiggsfieldGenerateRequest,
 ): Promise<HiggsfieldProviderResponse> {
+	const model = resolveHiggsfieldModel(req.model);
 	const args = buildGenerateArgs(req);
 	const outcome = await runHiggsfield(args);
 
 	if (outcome.exitCode !== 0) {
-		throw classifyFailure(outcome, "generate create gpt_image_2");
+		throw classifyFailure(outcome, `generate create ${model}`);
 	}
 
 	// Auth/timeout hints can appear even on exit 0 in some CLI versions, so we
@@ -418,7 +463,7 @@ export async function generateHiggsfieldImage(
 	}
 	if (TIMEOUT_HINTS.some((h) => haystack.includes(h))) {
 		throw new HiggsfieldTimeoutError(
-			`Higgsfield generation timed out (generate create gpt_image_2). ${outcome.stderr.trim()}`,
+			`Higgsfield generation timed out (generate create ${model}). ${outcome.stderr.trim()}`,
 		);
 	}
 

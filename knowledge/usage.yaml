@@ -8,7 +8,9 @@ features:
   - name: "Batch generation with dependency graph"
     description: "POST /api/generate/batch runs many prompts at once. A Kahn topological sort orders items by an optional sceneId dependency graph into layers; each layer runs concurrently (semaphore, max 5). Partial failures are captured per-item as {error} rather than failing the whole batch; circular deps are handled gracefully."
   - name: "Multi-provider model routing"
-    description: "One endpoint, two providers. Gemini models (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview, gemini-2.5-flash-image — the default) call WisGate's generateContent API; OpenAI models (gpt-image-2, gpt-image-1.5) route to WisGate's OpenAI-compatible /v1/images/generations. Selection is automatic: model names starting with 'gpt-' use the OpenAI path. Both share one WISDOM_GATE_KEY."
+    description: "One endpoint, three providers. Higgsfield (higgsfield-nano-banana-pro — the DEFAULT) shells out to the local `higgsfield` CLI; the default CLI model is NanoBanana Pro (job_set_type nano_banana_2), with higgsfield-gpt-image-2 (-> gpt_image_2) also selectable and HIGGSFIELD_MODEL overriding the CLI token. Gemini models (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview, gemini-2.5-flash-image) call WisGate's generateContent API; OpenAI models (gpt-image-2, gpt-image-1.5) route to WisGate's OpenAI-compatible /v1/images/generations. Selection is automatic: omit `model` (or pass one starting with 'higgsfield') for Higgsfield, names starting with 'gpt-' use the OpenAI path, everything else is Gemini. Gemini/OpenAI share one WISDOM_GATE_KEY."
+  - name: "Permission-gated fallback (no silent provider swap)"
+    description: "When the default Higgsfield provider fails (auth/timeout/CLI/no-URL), ImageEngine does NOT silently swap providers; it surfaces a clear actionable error. Auto-fallback to gemini-2.5-flash-image happens only when permitted per-request (autoFallback: true) or globally (IMAGE_ENGINE_AUTO_FALLBACK=1); the gallery/ledger then record the provider actually served."
   - name: "Reference images (image-to-image)"
     description: "Supply references two ways: inline base64 via referenceImages[] (each capped ~10 MB binary / 14M base64 chars) or referenceImageIds[] that are resolved against the IMAGES table via getImage() (NOT the generations table). Up to 14 references per request (6 objects + 5 humans per WisGate). Gemini path only; ignored for OpenAI models."
   - name: "Multi-turn conversational editing"
@@ -34,8 +36,9 @@ features:
 
 prerequisites:
   - "Bun v1.0+ — curl -fsSL https://bun.sh/install | bash"
-  - "A WisGate (JuheAPI) account key set as WISDOM_GATE_KEY in systems/image-engine/.env (re-read from .env on every call, so rotating it needs no restart)"
-  - "For real generation: a positive WisGate dollar balance — when the balance is exhausted the budget guard hard-stops generation with HTTP 402"
+  - "Higgsfield CLI (HOST prerequisite for the default provider) — npm install -g @higgsfield/cli, then authenticate once with `higgsfield auth login`. The default model higgsfield-nano-banana-pro (CLI job_set_type nano_banana_2) shells out to this binary, so the default /api/generate path requires a working, authenticated CLI; without it (or its auth) Higgsfield generations fail with a clear actionable error rather than silently swapping providers (unless auto-fallback is enabled — see IMAGE_ENGINE_AUTO_FALLBACK / per-request autoFallback). Override the binary path with HIGGSFIELD_BIN, or the CLI model with HIGGSFIELD_MODEL, if needed."
+  - "A WisGate (JuheAPI) account key set as WISDOM_GATE_KEY in systems/image-engine/.env (re-read from .env on every call, so rotating it needs no restart) — required for the Gemini/OpenAI models and the opt-in Higgsfield -> gemini fallback"
+  - "For real Gemini/OpenAI generation (and the opt-in Higgsfield fallback): a positive WisGate dollar balance — when the balance is exhausted the budget guard hard-stops generation with HTTP 402"
 
 configVars:
   - name: "WISDOM_GATE_KEY"
@@ -50,6 +53,15 @@ configVars:
   - name: "IMAGE_ENGINE_TOKEN_CEILING"
     required: false
     description: "Initial token budget ceiling seeded into budget_config on first run; enforced by the batch executor. Default 100000. Adjust later via PUT /api/budget/ceiling."
+  - name: "HIGGSFIELD_BIN"
+    required: false
+    description: "Path to the higgsfield CLI binary. Resolved at call time. Default 'higgsfield' (on PATH)."
+  - name: "HIGGSFIELD_MODEL"
+    required: false
+    description: "Overrides the default Higgsfield CLI model (job_set_type). Default 'nano_banana_2' (NanoBanana Pro). Resolved at call time. An explicit known public model id (higgsfield-gpt-image-2 -> gpt_image_2) still wins over this."
+  - name: "IMAGE_ENGINE_AUTO_FALLBACK"
+    required: false
+    description: "Set to '1' to globally permit the Higgsfield -> gemini-2.5-flash-image auto-fallback when Higgsfield fails. Default: unset = no auto-fallback (a Higgsfield failure surfaces a clear actionable error). Per-request `autoFallback: true` overrides this."
 
 install:
   - "cd systems/image-engine"

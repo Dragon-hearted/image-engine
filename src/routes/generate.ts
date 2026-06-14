@@ -26,10 +26,22 @@ import type {
 import { generateImage } from "../wisgate";
 
 /**
- * Higgsfield is the default generation provider for ImageEngine: any caller
- * that omits `model` gets it. gemini/openai models stay selectable via `model`.
+ * Higgsfield (NanoBanana Pro) is the default generation provider for
+ * ImageEngine: any caller that omits `model` gets it. gemini/openai models stay
+ * selectable via `model`.
  */
-const DEFAULT_MODEL = "higgsfield-gpt-image-2";
+const DEFAULT_MODEL = "higgsfield-nano-banana-pro";
+
+/**
+ * Permission gate for the Higgsfield → gemini auto-fallback. By default a
+ * Higgsfield failure surfaces a clear, actionable error — NO silent provider
+ * swap. Opt in per-request via `request.autoFallback: true`, or globally via
+ * `IMAGE_ENGINE_AUTO_FALLBACK=1`.
+ */
+function autoFallbackAllowed(request: GenerationRequest): boolean {
+	if (typeof request.autoFallback === "boolean") return request.autoFallback;
+	return process.env.IMAGE_ENGINE_AUTO_FALLBACK === "1";
+}
 
 function openaiSizeFromAspectRatio(
 	ar?: string,
@@ -132,6 +144,7 @@ export async function executeGeneration(
 			try {
 				response = await generateHiggsfieldImage({
 					prompt: request.prompt,
+					model,
 					aspectRatio: request.aspectRatio,
 					quality: request.openaiQuality,
 					referenceImagePaths:
@@ -139,8 +152,24 @@ export async function executeGeneration(
 				});
 				servedModel = model;
 			} catch (err) {
-				console.error(
-					"[image-engine] Higgsfield failed, falling back to gemini-2.5-flash-image:",
+				// Permission-gated fallback: by default we DO NOT silently swap
+				// providers — we surface a clear, actionable error. The caller can
+				// opt into an automatic gemini fallback per-request
+				// (`autoFallback: true`) or globally (`IMAGE_ENGINE_AUTO_FALLBACK=1`),
+				// or just re-issue the request with an explicit `model`.
+				if (!autoFallbackAllowed(request)) {
+					const detail = err instanceof Error ? err.message : String(err);
+					throw new Error(
+						`Higgsfield (${model}) generation failed and auto-fallback is disabled. ` +
+							"Fix the Higgsfield CLI (e.g. `higgsfield auth login`), retry with an explicit " +
+							"`model` (e.g. gemini-2.5-flash-image), or permit a one-off fallback with " +
+							"`autoFallback: true` / IMAGE_ENGINE_AUTO_FALLBACK=1. " +
+							`Underlying error: ${detail}`,
+					);
+				}
+				console.warn(
+					"[image-engine] Higgsfield failed; auto-fallback permitted, " +
+						"falling back to gemini-2.5-flash-image:",
 					err,
 				);
 				response = await generateImage({
