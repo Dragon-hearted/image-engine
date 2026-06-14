@@ -36,8 +36,9 @@ features:
 
 prerequisites:
   - "Bun v1.0+ — curl -fsSL https://bun.sh/install | bash"
-  - "A WisGate (JuheAPI) account key set as WISDOM_GATE_KEY in systems/image-engine/.env (re-read from .env on every call, so rotating it needs no restart)"
-  - "For real generation: a positive WisGate dollar balance — when the balance is exhausted the budget guard hard-stops generation with HTTP 402"
+  - "Higgsfield CLI (HOST prerequisite for the default provider) — npm install -g @higgsfield/cli, then authenticate once with `higgsfield auth login`. The default model higgsfield-nano-banana-pro (CLI job_set_type nano_banana_2) shells out to this binary, so the default /api/generate path requires a working, authenticated CLI; without it (or its auth) Higgsfield generations fail with a clear actionable error rather than silently swapping providers (unless auto-fallback is enabled — see IMAGE_ENGINE_AUTO_FALLBACK / per-request autoFallback). Override the binary path with HIGGSFIELD_BIN, or the CLI model with HIGGSFIELD_MODEL, if needed."
+  - "A WisGate (JuheAPI) account key set as WISDOM_GATE_KEY in systems/image-engine/.env (re-read from .env on every call, so rotating it needs no restart) — required for the Gemini/OpenAI models and the opt-in Higgsfield -> gemini fallback"
+  - "For real Gemini/OpenAI generation (and the opt-in Higgsfield fallback): a positive WisGate dollar balance — when the balance is exhausted the budget guard hard-stops generation with HTTP 402"
 
 configVars:
   - name: "WISDOM_GATE_KEY"
