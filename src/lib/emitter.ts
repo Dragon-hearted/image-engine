@@ -37,7 +37,17 @@ export interface Emitter {
 	/** True when an ingest URL is configured; false = Reflect mode (no-op). */
 	readonly enabled: boolean;
 	runStarted(): Promise<void>;
-	step(stepKey: string, state: StepState, artifact?: StepArtifact): Promise<void>;
+	/**
+	 * Emit a Step lifecycle event. `retryAttempt` (default 0) is part of the
+	 * ingest dedupe identity (#32) so a retried event — same state, new attempt —
+	 * is not collapsed as a duplicate. Bump it when re-running an item.
+	 */
+	step(
+		stepKey: string,
+		state: StepState,
+		artifact?: StepArtifact,
+		retryAttempt?: number,
+	): Promise<void>;
 	runCompleted(status: RunCompletedStatus): Promise<void>;
 }
 
@@ -87,13 +97,14 @@ export function createEmitter(opts: {
 				startedAt: Date.now(),
 			});
 		},
-		step(stepKey, state, artifact) {
+		step(stepKey, state, artifact, retryAttempt = 0) {
 			const envelope: Record<string, unknown> = {
 				envelopeVersion: ENVELOPE_VERSION,
 				kind: "step",
 				runId: opts.runId,
 				stepKey,
 				state,
+				retryAttempt,
 			};
 			if (artifact) envelope.artifact = artifact;
 			return post(envelope);
