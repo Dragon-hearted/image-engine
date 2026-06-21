@@ -84,6 +84,13 @@ export interface GenerationRequest {
 	model?: ImageModel;
 	referenceImageIds?: string[];
 	referenceImages?: { data: string; mimeType: string }[];
+	/**
+	 * Curated Reference data [ADR-0012]: on-disk vault file paths. Image files
+	 * (png/jpg/jpeg/webp) join the reference group (subject to the cap/montage
+	 * flow); markdown/JSON/text files are appended to the prompt as reference
+	 * context. Read with plain `node:fs` — no Obsidian dependency.
+	 */
+	referenceData?: string[];
 	aspectRatio?: AspectRatio;
 	imageSize?: ImageSize;
 	forceImage?: boolean;

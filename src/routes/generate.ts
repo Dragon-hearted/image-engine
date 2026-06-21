@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -11,6 +11,8 @@ import {
 } from "../db";
 import { generateHiggsfieldImage } from "../higgsfield-provider";
 import { executeBatch } from "../lib/batch-executor";
+import { montage, MontageInputError } from "../lib/montage";
+import { capFor } from "../lib/ref-cap";
 import { budgetGuard } from "../middleware/budget-guard";
 import { rateLimiter } from "../middleware/rate-limiter";
 import { generateOpenAIImage } from "../openai-provider";
@@ -59,6 +61,36 @@ function extFromMimeType(mimeType: string): string {
 	return "png";
 }
 
+/** Vault file extensions [ADR-0012] treated as image reference slots. */
+const VAULT_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp"]);
+
+/** Map a vault image file extension to its mime type. */
+function mimeFromExt(ext: string): string {
+	if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+	if (ext === "webp") return "image/webp";
+	return "image/png";
+}
+
+/**
+ * Collapse an overflow reference tail into a single deterministic montage so the
+ * resolved group never exceeds the backend's cap [ADR-0017]. For N refs / cap C:
+ *   N <= C → unchanged (montage is the exception, not the norm)
+ *   N >  C → [...first C-1 pinned, montage(rest)]  (length exactly C)
+ * Returns the resolved base64 list plus the montage entry (or null when no
+ * collapse happened) so the caller can keep the Higgsfield path list aligned.
+ */
+export async function resolveReferenceGroup(
+	refs: { data: string; mimeType: string }[],
+	cap: number,
+): Promise<{
+	refs: { data: string; mimeType: string }[];
+	composite: { data: string; mimeType: "image/png" } | null;
+}> {
+	if (refs.length <= cap) return { refs, composite: null };
+	const composite = await montage(refs.slice(cap - 1));
+	return { refs: [...refs.slice(0, cap - 1), composite], composite };
+}
+
 const UPLOADS_DIR = "./uploads";
 
 export class ReferenceImageTooLargeError extends Error {
@@ -91,8 +123,8 @@ export async function executeGeneration(
 	//  - referencePaths: local file paths for the Higgsfield CLI's repeated
 	//    `--image` flags (inline base64 refs are spilled to temp files)
 	// Inline (base64) refs first, then DB-looked-up IDs.
-	const referenceImages: { data: string; mimeType: string }[] = [];
-	const referencePaths: string[] = [];
+	let referenceImages: { data: string; mimeType: string }[] = [];
+	let referencePaths: string[] = [];
 	const tempRefPaths: string[] = [];
 	if (request.referenceImages?.length) {
 		for (const ref of request.referenceImages) {
@@ -126,6 +158,56 @@ export async function executeGeneration(
 			});
 			referencePaths.push(img.path);
 		}
+	}
+
+	// Reference data (vault) [ADR-0012]: read curated on-disk files directly.
+	// ponytail: plain node:fs reads — NO Obsidian API / vault import. Image files
+	// join the reference group (and the cap/montage flow below); text files
+	// (markdown / JSON / txt) are appended to the prompt as reference context.
+	if (request.referenceData?.length) {
+		for (const refPath of request.referenceData) {
+			const ext = refPath.split(".").pop()?.toLowerCase() ?? "";
+			let buffer: Buffer;
+			try {
+				buffer = await readFile(refPath);
+			} catch {
+				throw new Error(`Reference data file not found: ${refPath}`);
+			}
+			if (VAULT_IMAGE_EXTS.has(ext)) {
+				referenceImages.push({
+					data: buffer.toString("base64"),
+					mimeType: mimeFromExt(ext),
+				});
+				// The vault path is already a real on-disk file — feed the
+				// Higgsfield CLI directly, no temp spill needed.
+				if (isHiggsfield) referencePaths.push(refPath);
+			} else {
+				request.prompt = `${request.prompt}\n\n[Reference data: ${refPath}]\n${buffer.toString("utf8")}`;
+			}
+		}
+	}
+
+	// Overflow resolution [ADR-0017]: collapse refs past the model's cap into one
+	// deterministic montage so exactly `cap` inputs reach the provider.
+	// ponytail: triggers on `total` only — category-blind per ADR-0017 v1.
+	const providerHint = isHiggsfield
+		? "higgsfield"
+		: isOpenAI
+			? "openai"
+			: "wisgate";
+	const cap = capFor(providerHint, model, "image").total;
+	const resolved = await resolveReferenceGroup(referenceImages, cap);
+	referenceImages = resolved.refs;
+	if (resolved.composite && isHiggsfield) {
+		// Keep the Higgsfield path list aligned with the base64 list: spill the
+		// montage to a temp file and collapse referencePaths the same way (first
+		// cap-1 pinned + montage last). Overflow temp files beyond cap-1 stay in
+		// tempRefPaths and are still cleaned up in the finally below.
+		const ext = extFromMimeType(resolved.composite.mimeType);
+		const tmpPath = join(tmpdir(), `ie-montage-${randomUUID()}.${ext}`);
+		await writeFile(tmpPath, Buffer.from(resolved.composite.data, "base64"));
+		tempRefPaths.push(tmpPath);
+		referencePaths = [...referencePaths.slice(0, cap - 1), tmpPath];
 	}
 
 	let response: {
@@ -288,7 +370,15 @@ generate.post("/", async (c) => {
 		if (err instanceof ReferenceImageTooLargeError) {
 			return c.json({ error: message }, 413);
 		}
-		if (message.startsWith("Reference image not found")) {
+		// Malformed montage input is a hard-block — same class as the too-large
+		// guard above, surfaced as a readable 400.
+		if (err instanceof MontageInputError) {
+			return c.json({ error: message }, 400);
+		}
+		if (
+			message.startsWith("Reference image not found") ||
+			message.startsWith("Reference data file not found")
+		) {
 			return c.json({ error: message }, 404);
 		}
 		return c.json({ error: message }, 500);
