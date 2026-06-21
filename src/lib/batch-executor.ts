@@ -133,9 +133,12 @@ async function executeItem(
 	semaphore: Semaphore,
 	emitter: Emitter,
 	stepKey: string,
+	deps: string[],
 ): Promise<GenerationResult | { error: string }> {
-	// Step enters the queue (waiting on a concurrency slot).
-	emitter.step(stepKey, "queued");
+	// Step enters the queue (waiting on a concurrency slot). Declared deps ride
+	// the first event only — the Substrate unions deps per stepKey (#34), so one
+	// carrier suffices. ponytail: no need to repeat on every state transition.
+	emitter.step(stepKey, "queued", undefined, 0, deps);
 
 	// Budget check before each item
 	const config = getBudgetConfig();
@@ -181,6 +184,17 @@ export async function executeBatch(batch: BatchRequest): Promise<BatchResult> {
 
 	const layers = topologicalSort(batch.items, batch.dependencies);
 
+	// Declared dependency DAG (ADR-0008): map each scene's upstream sceneIds to
+	// their stepKeys so the Canvas draws edges from the producer's own deps, not
+	// emission order. A scene with no entry (or a lone gen) has no deps.
+	const depsBySceneId = new Map<string, string[]>();
+	for (const dep of batch.dependencies ?? []) {
+		depsBySceneId.set(
+			dep.sceneId,
+			dep.dependsOn.map((d) => `${runId}:${d}`),
+		);
+	}
+
 	for (const layer of layers) {
 		// Execute all items in the layer concurrently (bounded by semaphore)
 		const layerResults = await Promise.all(
@@ -188,7 +202,16 @@ export async function executeBatch(batch: BatchRequest): Promise<BatchResult> {
 				const key = item.sceneId ?? randomUUID();
 				// stepKey convention: `<runId>:<stage>` (ADR-0006).
 				const stepKey = `${runId}:${key}`;
-				const result = await executeItem(item, semaphore, emitter, stepKey);
+				const deps = item.sceneId
+					? (depsBySceneId.get(item.sceneId) ?? [])
+					: [];
+				const result = await executeItem(
+					item,
+					semaphore,
+					emitter,
+					stepKey,
+					deps,
+				);
 				return { key, result };
 			}),
 		);

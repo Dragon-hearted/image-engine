@@ -41,12 +41,17 @@ export interface Emitter {
 	 * Emit a Step lifecycle event. `retryAttempt` (default 0) is part of the
 	 * ingest dedupe identity (#32) so a retried event — same state, new attempt —
 	 * is not collapsed as a duplicate. Bump it when re-running an item.
+	 *
+	 * `deps` (optional) declares this Step's upstream dependency stepKeys (#34,
+	 * ADR-0008) so the Canvas draws edges from the producer's own DAG, not
+	 * emission order. Sent in the envelope only when non-empty.
 	 */
 	step(
 		stepKey: string,
 		state: StepState,
 		artifact?: StepArtifact,
 		retryAttempt?: number,
+		deps?: string[],
 	): Promise<void>;
 	runCompleted(status: RunCompletedStatus): Promise<void>;
 }
@@ -97,7 +102,7 @@ export function createEmitter(opts: {
 				startedAt: Date.now(),
 			});
 		},
-		step(stepKey, state, artifact, retryAttempt = 0) {
+		step(stepKey, state, artifact, retryAttempt = 0, deps) {
 			const envelope: Record<string, unknown> = {
 				envelopeVersion: ENVELOPE_VERSION,
 				kind: "step",
@@ -107,6 +112,7 @@ export function createEmitter(opts: {
 				retryAttempt,
 			};
 			if (artifact) envelope.artifact = artifact;
+			if (deps && deps.length > 0) envelope.deps = deps;
 			return post(envelope);
 		},
 		runCompleted(status) {
