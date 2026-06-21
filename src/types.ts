@@ -165,6 +165,13 @@ export interface TokenCostRecord {
 	createdAt: string;
 }
 
+// Per-provider cumulative USD spend roll-up [ADR-0007, slice #38].
+export interface ProviderSpendRecord {
+	provider: string;
+	spentUsd: number;
+	updatedAt: string;
+}
+
 export interface BudgetConfig {
 	id: string;
 	tokenCeiling: number;

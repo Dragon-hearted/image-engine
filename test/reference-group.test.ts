@@ -35,6 +35,9 @@ beforeAll(() => {
 		insertImage: () => {},
 		insertTokenRecord: () => {},
 		getTotalTokensSpent: () => 0,
+		// Provider-scoped budget guard deps [#38] — never trips here (always 0).
+		getProviderSpend: () => 0,
+		addProviderSpend: () => {},
 		getBudgetConfig: () => null,
 		getGeneration: () => null,
 		getAllGenerations: () => [],

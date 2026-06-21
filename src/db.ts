@@ -61,6 +61,22 @@ db.exec(`
   )
 `);
 
+// Per-provider cumulative USD spend roll-up [ADR-0007, slice #38].
+//
+// ponytail: a tiny per-provider counter, NOT a new ledger system. We can't
+// derive provider spend from token_ledger because the pricey route we most
+// need to gate — Higgsfield CLI — reports no tokens (CLI credits, not a token
+// API), so a token-sum would under-count exactly the provider that matters.
+// Instead each served gen increments this roll-up via addProviderSpend(); the
+// USD figure is the caller's (the guard knows the serving provider + its cost).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS provider_spend (
+    provider TEXT PRIMARY KEY,
+    spentUsd REAL NOT NULL DEFAULT 0,
+    updatedAt TEXT NOT NULL
+  )
+`);
+
 // Idempotent migration: add dollar columns if missing
 const budgetCols = db
 	.prepare("PRAGMA table_info(budget_config)")
@@ -227,6 +243,38 @@ export function updateDollarBudget(
 	db.prepare(
 		"UPDATE budget_config SET dollarTopUp = ?, dollarsLastSeen = ?, updatedAt = ? WHERE isActive = 1",
 	).run(topUp, lastSeen, new Date().toISOString());
+}
+
+// ─── Per-provider spend helpers [ADR-0007, slice #38] ───
+
+// Normalize to a stable key so 'WisGate'/'wisgate'/' wisgate ' collapse to one
+// row. Callers pass the canonical provider from budget.ts:providerOf().
+function providerSpendKey(provider: string): string {
+	return provider.trim().toLowerCase();
+}
+
+/**
+ * Increment a provider's cumulative USD spend. Called on each SERVED generation
+ * (by the provider-scoped guard / generate.ts). Upsert: first spend creates the
+ * row, later spend accrues onto it.
+ */
+export function addProviderSpend(provider: string, usd: number): void {
+	if (!Number.isFinite(usd) || usd <= 0) return;
+	db.prepare(
+		`INSERT INTO provider_spend (provider, spentUsd, updatedAt)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(provider) DO UPDATE SET
+		   spentUsd = spentUsd + excluded.spentUsd,
+		   updatedAt = excluded.updatedAt`,
+	).run(providerSpendKey(provider), usd, new Date().toISOString());
+}
+
+/** Cumulative USD spent on a provider so far. Unknown/never-served provider → 0. */
+export function getProviderSpend(provider: string): number {
+	const row = db
+		.prepare("SELECT spentUsd FROM provider_spend WHERE provider = ?")
+		.get(providerSpendKey(provider)) as { spentUsd: number } | undefined;
+	return row?.spentUsd ?? 0;
 }
 
 export { db };

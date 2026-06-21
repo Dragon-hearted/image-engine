@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import {
+	addProviderSpend,
 	getImage,
+	getProviderSpend,
 	insertGeneration,
 	insertImage,
 	insertTokenRecord,
 } from "../db";
 import { generateHiggsfieldImage } from "../higgsfield-provider";
 import { executeBatch } from "../lib/batch-executor";
+import { budgetFor, providerOf } from "../lib/budget";
 import { montage, MontageInputError } from "../lib/montage";
 import { capFor } from "../lib/ref-cap";
 import { budgetGuard } from "../middleware/budget-guard";
@@ -100,6 +103,101 @@ export class ReferenceImageTooLargeError extends Error {
 	}
 }
 
+/**
+ * Thrown by the provider-scoped budget guard [ADR-0007, slice #38] when the
+ * SERVING provider's cumulative spend has already crossed its `budgetFor` line.
+ * Surfaced as a 402 by the route handler (distinct from the WisGate-wallet 402
+ * in budget-guard.ts — this is the ADDITIVE per-provider spend-line).
+ */
+export class ProviderBudgetExceededError extends Error {
+	constructor(
+		public readonly provider: string,
+		public readonly model: string,
+		public readonly spentUsd: number,
+		public readonly limitUsd: number,
+	) {
+		super(
+			`Provider budget-line exceeded for ${provider} (${model}): ` +
+				`$${spentUsd.toFixed(2)} spent ≥ $${limitUsd.toFixed(2)} line — generation blocked [ADR-0007]. ` +
+				`Raise IMAGE_ENGINE_BUDGET_${provider.toUpperCase()}_USD or route to a different provider.`,
+		);
+		this.name = "ProviderBudgetExceededError";
+	}
+}
+
+/**
+ * Per-served-generation USD cost estimate, by provider [slice #38].
+ *
+ * image-engine has NO real per-gen USD figure: WisGate/OpenAI report tokens (not
+ * dollars) and the Higgsfield CLI reports nothing at all (CLI credits, not a
+ * token API) — a token-sum would under-count exactly the pricey route the guard
+ * most needs to gate. So the per-provider spend roll-up is fed a configured flat
+ * per-gen estimate, env-overridable (`IMAGE_ENGINE_<PROVIDER>_COST_USD`, e.g.
+ * `IMAGE_ENGINE_HIGGSFIELD_COST_USD`).
+ *
+ * // ponytail: a flat estimate, NOT a pricing engine — just enough to accrue
+ * cumulative spend so the line trips; precise token→USD pricing is deferred.
+ */
+const DEFAULT_GEN_COST_USD: Record<string, number> = {
+	higgsfield: 1, // pricey CLI credits — the route the guard most needs to gate
+	openai: 0.5,
+	wisgate: 0.25,
+};
+const FALLBACK_GEN_COST_USD = 0.25;
+
+function costFor(provider: string): number {
+	const envKey = `IMAGE_ENGINE_${provider.toUpperCase()}_COST_USD`;
+	const fromEnv = Number.parseFloat(process.env[envKey] ?? "");
+	if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+	return DEFAULT_GEN_COST_USD[provider] ?? FALLBACK_GEN_COST_USD;
+}
+
+const TRIP_POST_TIMEOUT_MS = 2000;
+
+/**
+ * Resolve the Console budget-trip endpoint — SAME env as the Emitter
+ * (`CONSOLE_INGEST_URL` base / `ORCH_PORT`), but POSTs to `<base>/api/budget-trip`
+ * (the `/api/ingest` suffix is stripped). No Console configured → null (no-op).
+ */
+function resolveBudgetTripUrl(): string | null {
+	const explicit = process.env.CONSOLE_INGEST_URL;
+	if (explicit) {
+		const base = explicit.replace(/\/+$/, "").replace(/\/api\/ingest$/, "");
+		return `${base}/api/budget-trip`;
+	}
+	const port = process.env.ORCH_PORT;
+	if (port) return `http://127.0.0.1:${port}/api/budget-trip`;
+	return null;
+}
+
+/**
+ * Fire-and-forget POST of a budget-trip to the Console [slice #38]. Mirrors the
+ * Emitter's `post()`: short timeout, swallows ALL errors, no-ops when no Console
+ * is configured.
+ *
+ * // ponytail: MUST NEVER block or fail a generation — the 402 block is the
+ * guard; this trip is only the Console's visible signal. Separate POST, NOT a
+ * Run/Step envelope, so the Emitter pair is untouched.
+ */
+export function postBudgetTrip(trip: {
+	provider: string;
+	model: string;
+	spentUsd: number;
+	limitUsd: number;
+	at: number;
+}): Promise<void> {
+	const url = resolveBudgetTripUrl();
+	if (!url) return Promise.resolve();
+	return fetch(url, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(trip),
+		signal: AbortSignal.timeout(TRIP_POST_TIMEOUT_MS),
+	})
+		.then(() => undefined)
+		.catch(() => undefined);
+}
+
 export const generate = new Hono();
 
 // Apply rate limiter and budget guard to all generation routes
@@ -116,6 +214,29 @@ export async function executeGeneration(
 	const model = request.model ?? DEFAULT_MODEL;
 	const isHiggsfield = model.startsWith("higgsfield");
 	const isOpenAI = model.startsWith("gpt-");
+
+	// ── Provider-scoped budget guard [ADR-0007, slice #38] ──
+	// Gated on the SERVING provider — never a global cross-provider gate. If this
+	// provider's cumulative spend has already crossed its budgetFor line, BLOCK
+	// the next gen (don't silently execute) and fire a trip to the Console.
+	// ponytail: REACTIVE (cumulative spend ≥ line → block the NEXT gen on that
+	// provider); projected pre-flight cost is a deferred refinement. The WisGate
+	// wallet 402 (budget-guard middleware) stays; this is the ADDITIVE per-provider
+	// spend-line for every provider incl. Higgsfield (which has no wallet API).
+	const provider = providerOf(model);
+	const { limitUsd } = budgetFor(provider, model, "image");
+	const spentSoFar = getProviderSpend(provider);
+	if (spentSoFar >= limitUsd) {
+		// ponytail: fire-and-forget — the trip POST must NEVER block/fail a gen.
+		void postBudgetTrip({
+			provider,
+			model,
+			spentUsd: spentSoFar,
+			limitUsd,
+			at: Date.now(),
+		});
+		throw new ProviderBudgetExceededError(provider, model, spentSoFar, limitUsd);
+	}
 
 	// Resolve reference images ONCE into two parallel representations:
 	//  - referenceImages: base64 list for the gemini/WisGate path (and the
@@ -343,6 +464,13 @@ export async function executeGeneration(
 		createdAt: now,
 	});
 
+	// Record this served generation's spend against the SERVING provider — which
+	// may differ from the requested model on a Higgsfield→gemini fallback, so we
+	// key off servedModel (the truth) not the requested model. Lazy per-gen USD
+	// estimate (see costFor); feeds the reactive budget-line above.
+	const servedProvider = providerOf(servedModel);
+	addProviderSpend(servedProvider, costFor(servedProvider));
+
 	return {
 		id: genId,
 		imageUrl: `/api/gallery/${genId}/image`,
@@ -367,6 +495,20 @@ generate.post("/", async (c) => {
 		return c.json(result, 201);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		// Provider-scoped budget-line block [ADR-0007, #38] → 402 (additive to the
+		// WisGate-wallet 402); echoes the trip shape the Console banner consumes.
+		if (err instanceof ProviderBudgetExceededError) {
+			return c.json(
+				{
+					error: message,
+					provider: err.provider,
+					model: err.model,
+					spentUsd: err.spentUsd,
+					limitUsd: err.limitUsd,
+				},
+				402,
+			);
+		}
 		if (err instanceof ReferenceImageTooLargeError) {
 			return c.json({ error: message }, 413);
 		}
