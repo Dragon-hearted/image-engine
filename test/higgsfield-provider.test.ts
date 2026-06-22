@@ -104,9 +104,9 @@ describe("toHiggsfieldAspect", () => {
 		expect(toHiggsfieldAspect("9:16")).toBe("9:16");
 		expect(toHiggsfieldAspect("1:1")).toBe("1:1");
 	});
-	test("maps unsupported ratios (and undefined) to 16:9", () => {
-		expect(toHiggsfieldAspect("4:5")).toBe("16:9");
-		expect(toHiggsfieldAspect("21:9")).toBe("16:9");
+	test("maps unsupported ratios to the nearest supported (undefined → 16:9)", () => {
+		expect(toHiggsfieldAspect("4:5")).toBe("3:4"); // portrait stays portrait, not 16:9
+		expect(toHiggsfieldAspect("21:9")).toBe("16:9"); // 2.33 → nearest is 16:9
 		expect(toHiggsfieldAspect(undefined)).toBe("16:9");
 	});
 });

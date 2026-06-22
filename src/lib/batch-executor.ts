@@ -7,6 +7,7 @@ import type {
 	GenerationRequest,
 	GenerationResult,
 } from "../types";
+import { type Emitter, createEmitter } from "./emitter";
 
 const MAX_CONCURRENCY = 5;
 
@@ -130,20 +131,39 @@ function topologicalSort(
 async function executeItem(
 	request: GenerationRequest,
 	semaphore: Semaphore,
+	emitter: Emitter,
+	stepKey: string,
+	deps: string[],
 ): Promise<GenerationResult | { error: string }> {
+	// Step enters the queue (waiting on a concurrency slot). Declared deps ride
+	// the first event only — the Substrate unions deps per stepKey (#34), so one
+	// carrier suffices. ponytail: no need to repeat on every state transition.
+	emitter.step(stepKey, "queued", undefined, 0, deps);
+
 	// Budget check before each item
 	const config = getBudgetConfig();
 	if (config?.isActive) {
 		const spent = getTotalTokensSpent();
 		if (spent >= config.tokenCeiling) {
+			emitter.step(stepKey, "failed");
 			return { error: "Budget ceiling exceeded" };
 		}
 	}
 
 	await semaphore.acquire();
+	// Slot acquired → the step is now actually running.
+	emitter.step(stepKey, "running");
 	try {
-		return await executeGeneration(request);
+		const result = await executeGeneration(request);
+		// ponytail: GenerationResult carries imageUrl but no mimeType; default to
+		// image/png for the artifact (good enough for the tracer slice).
+		emitter.step(stepKey, "succeeded", {
+			url: result.imageUrl,
+			mimeType: "image/png",
+		});
+		return result;
 	} catch (err) {
+		emitter.step(stepKey, "failed");
 		const message = err instanceof Error ? err.message : String(err);
 		return { error: message };
 	} finally {
@@ -156,14 +176,42 @@ export async function executeBatch(batch: BatchRequest): Promise<BatchResult> {
 	const results: Record<string, GenerationResult | { error: string }> = {};
 	let totalTokens = 0;
 
+	// One Run brackets the whole batch. Emission is fire-and-forget: it never
+	// blocks or fails a generation, and no-ops when no Console is attached.
+	const runId = randomUUID();
+	const emitter = createEmitter({ runId, producerSystem: "image-engine" });
+	emitter.runStarted();
+
 	const layers = topologicalSort(batch.items, batch.dependencies);
+
+	// Declared dependency DAG (ADR-0008): map each scene's upstream sceneIds to
+	// their stepKeys so the Canvas draws edges from the producer's own deps, not
+	// emission order. A scene with no entry (or a lone gen) has no deps.
+	const depsBySceneId = new Map<string, string[]>();
+	for (const dep of batch.dependencies ?? []) {
+		depsBySceneId.set(
+			dep.sceneId,
+			dep.dependsOn.map((d) => `${runId}:${d}`),
+		);
+	}
 
 	for (const layer of layers) {
 		// Execute all items in the layer concurrently (bounded by semaphore)
 		const layerResults = await Promise.all(
 			layer.map(async (item) => {
 				const key = item.sceneId ?? randomUUID();
-				const result = await executeItem(item, semaphore);
+				// stepKey convention: `<runId>:<stage>` (ADR-0006).
+				const stepKey = `${runId}:${key}`;
+				const deps = item.sceneId
+					? (depsBySceneId.get(item.sceneId) ?? [])
+					: [];
+				const result = await executeItem(
+					item,
+					semaphore,
+					emitter,
+					stepKey,
+					deps,
+				);
 				return { key, result };
 			}),
 		);
@@ -175,6 +223,17 @@ export async function executeBatch(batch: BatchRequest): Promise<BatchResult> {
 			}
 		}
 	}
+
+	// Aggregate status across all items.
+	const all = Object.values(results);
+	const failures = all.filter((r) => "error" in r).length;
+	const status =
+		failures === 0
+			? "completed"
+			: failures === all.length
+				? "failed"
+				: "completed-with-failures";
+	emitter.runCompleted(status);
 
 	return { results, totalTokens };
 }

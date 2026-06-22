@@ -181,15 +181,47 @@ const HIGGSFIELD_ASPECTS = new Set<HiggsfieldAspectRatio>([
 	"2:3",
 ]);
 
+/** Ordered list of Higgsfield-supported ratios (for nearest-match fallback). */
+const HIGGSFIELD_ASPECT_LIST: HiggsfieldAspectRatio[] = [
+	"1:1",
+	"4:3",
+	"3:4",
+	"16:9",
+	"9:16",
+	"3:2",
+	"2:3",
+];
+
+/** Numeric value (W/H) of a "W:H" ratio string; NaN if unparseable. */
+function ratioValue(ar: string): number {
+	const [w, h] = ar.split(":").map(Number);
+	return h ? w / h : Number.NaN;
+}
+
 /**
- * Map an ImageEngine aspect ratio to the narrower Higgsfield enum. Ratios the
- * CLI doesn't support (4:5, 5:4, 21:9, 1:4, 1:8, 4:1, 8:1) collapse to 16:9.
+ * Map an ImageEngine aspect ratio to the narrower Higgsfield enum. A ratio the
+ * CLI doesn't support (4:5, 5:4, 21:9, …) collapses to the NEAREST supported
+ * ratio numerically — so a portrait target (4:5 → 3:4) stays portrait instead
+ * of flipping to landscape 16:9.
  */
 export function toHiggsfieldAspect(ar?: AspectRatio): HiggsfieldAspectRatio {
 	if (ar && HIGGSFIELD_ASPECTS.has(ar as HiggsfieldAspectRatio)) {
 		return ar as HiggsfieldAspectRatio;
 	}
-	return "16:9";
+	const target = ar ? ratioValue(ar) : Number.NaN;
+	if (Number.isNaN(target)) {
+		return "16:9";
+	}
+	let best = HIGGSFIELD_ASPECT_LIST[0];
+	let bestDiff = Math.abs(ratioValue(best) - target);
+	for (const cand of HIGGSFIELD_ASPECT_LIST) {
+		const diff = Math.abs(ratioValue(cand) - target);
+		if (diff < bestDiff) {
+			best = cand;
+			bestDiff = diff;
+		}
+	}
+	return best;
 }
 
 /** Infer the response mime type from a media URL's file extension. */
